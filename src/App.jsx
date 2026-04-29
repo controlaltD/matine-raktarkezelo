@@ -7,6 +7,7 @@ const POLL_FALLBACK_MS = 15000;
 
 // ─── CONFIG ────────────────────────────────────────────────────────────────────
 const STORAGE_KEY = "matine2026-shared-v2";
+const AUTH_KEY = "matine2026-auth";
 
 
 const INIT_PRODUCTS = [
@@ -27,7 +28,14 @@ const INIT_LOCATIONS = [
   ...Array.from({ length: 8 }, (_, i) => ({ id: `b${i + 1}`, name: `Pult ${i + 1}`, type: "b" })),
 ];
 
-const INIT_DATA = { products: INIT_PRODUCTS, locations: INIT_LOCATIONS, opening: {}, movements: [], closing: {} };
+const INIT_PINS = {
+  admin: "9999",
+  r1: "1111", r2: "2222", r3: "3333",
+  b1: "1001", b2: "1002", b3: "1003", b4: "1004",
+  b5: "1005", b6: "1006", b7: "1007", b8: "1008",
+};
+
+const INIT_DATA = { products: INIT_PRODUCTS, locations: INIT_LOCATIONS, opening: {}, movements: [], closing: {}, pins: INIT_PINS };
 
 // ─── HELPERS ───────────────────────────────────────────────────────────────────
 const sk = (l, p) => `${l}__${p}`;
@@ -110,6 +118,96 @@ function SyncDot({ status, lastSync, onRefresh, full }) {
   );
 }
 
+
+// ─── PIN LOGIN ─────────────────────────────────────────────────────────────────
+function PinLogin({ data, onLogin }) {
+  const [pin, setPin] = useState("");
+  const [shake, setShake] = useState(false);
+  const isMobile = useWindowWidth() < 768;
+
+  const pins = data?.pins || INIT_PINS;
+  const locations = data?.locations || INIT_LOCATIONS;
+
+  function tryLogin(p) {
+    if (p === pins.admin) { onLogin({ role: "admin", locId: null }); return; }
+    const loc = locations.find(l => pins[l.id] === p);
+    if (loc) { onLogin({ role: loc.type === "r" ? "warehouse" : "bar", locId: loc.id, locName: loc.name }); return; }
+    setShake(true);
+    setPin("");
+    setTimeout(() => setShake(false), 500);
+  }
+
+  function press(val) {
+    if (val === "del") { setPin(p => p.slice(0, -1)); return; }
+    if (val === "ok") { if (pin.length === 4) tryLogin(pin); return; }
+    if (pin.length >= 4) return;
+    const next = pin + val;
+    setPin(next);
+    if (next.length === 4) setTimeout(() => tryLogin(next), 120);
+  }
+
+  const KEYS = ["1","2","3","4","5","6","7","8","9","del","0","ok"];
+
+  return (
+    <div style={{
+      background: T.bg, minHeight: "100vh", display: "flex",
+      flexDirection: "column", alignItems: "center", justifyContent: "center",
+      fontFamily: T.font, padding: 24,
+    }}>
+      <div style={{ marginBottom: 32, textAlign: "center" }}>
+        <div style={{ fontSize: 22, fontWeight: 700, color: T.amber, letterSpacing: "-0.02em" }}>MATINÉ 2026</div>
+        <div style={{ fontSize: 9, color: T.dim, letterSpacing: "0.2em", marginTop: 4 }}>RAKTÁRKEZELŐ</div>
+      </div>
+
+      {/* PIN dots */}
+      <div style={{
+        display: "flex", gap: 16, marginBottom: 32,
+        animation: shake ? "shake 0.4s ease" : "none",
+      }}>
+        {[0,1,2,3].map(i => (
+          <div key={i} style={{
+            width: 16, height: 16, borderRadius: "50%",
+            background: i < pin.length ? T.amber : "transparent",
+            border: `2px solid ${i < pin.length ? T.amber : T.borderHi}`,
+            transition: "all 0.1s",
+          }} />
+        ))}
+      </div>
+
+      {/* Numpad */}
+      <div style={{
+        display: "grid", gridTemplateColumns: "repeat(3, 1fr)",
+        gap: 10, width: "100%", maxWidth: 280,
+      }}>
+        {KEYS.map(k => (
+          <button key={k} onClick={() => press(k)} style={{
+            background: k === "ok" ? (pin.length === 4 ? T.amber : "#1a1a1a") : "#141414",
+            color: k === "ok" ? (pin.length === 4 ? "#000" : T.dim) : k === "del" ? T.muted : T.text,
+            border: `1px solid ${T.border}`,
+            borderRadius: 12, padding: "18px 0",
+            fontSize: k === "del" ? 18 : k === "ok" ? 13 : 22,
+            fontWeight: 700, cursor: "pointer", fontFamily: T.font,
+            letterSpacing: k === "ok" ? "0.1em" : 0,
+            transition: "all 0.1s",
+          }}>
+            {k === "del" ? "⌫" : k === "ok" ? "OK" : k}
+          </button>
+        ))}
+      </div>
+
+      <style>{`
+        @keyframes shake {
+          0%,100% { transform: translateX(0); }
+          20% { transform: translateX(-8px); }
+          40% { transform: translateX(8px); }
+          60% { transform: translateX(-6px); }
+          80% { transform: translateX(6px); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
 // ─── APP ───────────────────────────────────────────────────────────────────────
 const TABS = [
   { id: "keszlet", label: "Készlet", icon: "▦" },
@@ -129,6 +227,25 @@ export default function App() {
   dataRef.current = data;
   const width = useWindowWidth();
   const isMobile = width < 768;
+
+  // ── Auth ──
+  const [auth, setAuth] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(AUTH_KEY)) || null; } catch { return null; }
+  });
+
+  function handleLogin(session) {
+    localStorage.setItem(AUTH_KEY, JSON.stringify(session));
+    setAuth(session);
+    // Set default tab based on role
+    if (session.role === "warehouse") setTab("mozgas");
+    else if (session.role === "bar") setTab("bevelek");
+    else setTab("mozgas");
+  }
+
+  function handleLogout() {
+    localStorage.removeItem(AUTH_KEY);
+    setAuth(null);
+  }
 
   // ── Storage helpers ──
   async function readShared() {
@@ -244,8 +361,27 @@ export default function App() {
     );
   }
 
-  const viewProps = { data, updateData, addMovement, deleteMovement, resetData, isMobile };
-  const currentTab = TABS.find(t => t.id === tab);
+  // ── Auth gate ──
+  if (!auth) return <PinLogin data={data} onLogin={handleLogin} />;
+
+  // ── Role-based tabs ──
+  const isAdmin  = auth.role === "admin";
+  const isWH     = auth.role === "warehouse";
+  const isBar    = auth.role === "bar";
+
+  const ROLE_TABS = isAdmin ? TABS : isWH
+    ? [
+        { id: "keszlet", label: "Készlet",  icon: "▦" },
+        { id: "mozgas",  label: "Kiadás",   icon: "⇄" },
+      ]
+    : [
+        { id: "keszlet", label: "Készlet",  icon: "▦" },
+        { id: "bevelek", label: "Bevételez", icon: "↓" },
+        { id: "leltar",  label: "Leltár",   icon: "≡" },
+      ];
+
+  const viewProps = { data, updateData, addMovement, deleteMovement, resetData, isMobile, auth };
+  const currentTab = ROLE_TABS.find(t => t.id === tab) || ROLE_TABS[0];
 
   return (
     <div style={{ fontFamily: T.font, background: T.bg, minHeight: "100vh", color: T.text, display: "flex" }}>
@@ -259,10 +395,16 @@ export default function App() {
         }}>
           <div style={{ padding: "22px 20px 18px", borderBottom: `1px solid ${T.border}` }}>
             <div style={{ fontSize: 17, fontWeight: 700, color: T.amber, letterSpacing: "-0.02em" }}>MATINÉ 2026</div>
-            <div style={{ fontSize: 9, color: T.dim, letterSpacing: "0.2em", marginTop: 3 }}>RAKTÁRKEZELŐ · MULTI-ESZKÖZ</div>
+            <div style={{ fontSize: 9, color: T.dim, letterSpacing: "0.2em", marginTop: 3 }}>RAKTÁRKEZELŐ</div>
+            <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: isAdmin ? T.amber : isWH ? T.green : T.blue }} />
+              <span style={{ fontSize: 11, color: T.muted }}>
+                {isAdmin ? "ADMIN" : auth.locName}
+              </span>
+            </div>
           </div>
           <nav style={{ flex: 1, padding: "10px 0" }}>
-            {TABS.map(t => (
+            {ROLE_TABS.map(t => (
               <button key={t.id} onClick={() => setTab(t.id)} style={{
                 display: "flex", alignItems: "center", gap: 12, width: "100%",
                 padding: "12px 20px", background: tab === t.id ? T.amber + "12" : "none",
@@ -280,6 +422,11 @@ export default function App() {
             <div style={{ fontSize: 9, color: "#2a2a2a", marginTop: 6 }}>
               {data.movements.length} mozgás rögzítve
             </div>
+            <button onClick={handleLogout} style={{
+              marginTop: 12, width: "100%", background: "none", border: `1px solid #2a2a2a`,
+              borderRadius: 6, padding: "8px", fontSize: 10, color: "#444",
+              cursor: "pointer", fontFamily: T.font, letterSpacing: "0.1em",
+            }}>KIJELENTKEZÉS</button>
           </div>
         </aside>
       )}
@@ -296,9 +443,14 @@ export default function App() {
           }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 700, color: T.amber }}>MATINÉ 2026</div>
-              <div style={{ fontSize: 8, color: T.dim, letterSpacing: "0.18em" }}>RAKTÁRKEZELŐ</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+                <div style={{ width: 5, height: 5, borderRadius: "50%", background: isAdmin ? T.amber : isWH ? T.green : T.blue }} />
+                <span style={{ fontSize: 9, color: T.dim, letterSpacing: "0.1em" }}>
+                  {isAdmin ? "ADMIN" : auth.locName}
+                </span>
+              </div>
             </div>
-            <div style={{ marginLeft: "auto" }}>
+            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
               <SyncDot status={syncStatus} lastSync={lastSync} onRefresh={load} />
             </div>
           </header>
@@ -324,10 +476,11 @@ export default function App() {
         <main style={{ flex: 1, overflowY: "auto", paddingBottom: isMobile ? 70 : 32 }}>
           <div style={{ maxWidth: 860, margin: "0 auto" }}>
             {tab === "keszlet" && <KeszletView {...viewProps} />}
-            {tab === "mozgas" && <MozgasView {...viewProps} />}
-            {tab === "leltar" && <LeltarView {...viewProps} />}
-            {tab === "elszam" && <ElszamolasView {...viewProps} />}
-            {tab === "beall" && <BeallitasView {...viewProps} />}
+            {tab === "mozgas"  && <MozgasView  {...viewProps} />}
+            {tab === "bevelek" && <BevetelesView {...viewProps} />}
+            {tab === "leltar"  && <LeltarView  {...viewProps} />}
+            {tab === "elszam"  && <ElszamolasView {...viewProps} />}
+            {tab === "beall"   && <BeallitasView {...viewProps} onLogout={handleLogout} />}
           </div>
         </main>
       </div>
@@ -339,7 +492,7 @@ export default function App() {
           background: T.surface, borderTop: `1px solid ${T.border}`,
           display: "flex", zIndex: 100,
         }}>
-          {TABS.map(t => (
+          {ROLE_TABS.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)} style={{
               flex: 1, padding: "10px 4px 8px", background: "none", border: "none",
               borderTop: `2px solid ${tab === t.id ? T.amber : "transparent"}`,
@@ -348,9 +501,18 @@ export default function App() {
               alignItems: "center", gap: 3, fontFamily: T.font, letterSpacing: "0.05em",
             }}>
               <span style={{ fontSize: 16, lineHeight: 1 }}>{t.icon}</span>
-              <span>{t.label === "Elszámolás" ? "Elszám." : t.label === "Beállítások" ? "Beáll." : t.label}</span>
+              <span>{t.label}</span>
             </button>
           ))}
+          <button onClick={handleLogout} style={{
+            flex: 1, padding: "10px 4px 8px", background: "none", border: "none",
+            borderTop: "2px solid transparent", color: "#2e2e2e", fontSize: 8,
+            cursor: "pointer", display: "flex", flexDirection: "column",
+            alignItems: "center", gap: 3, fontFamily: T.font, letterSpacing: "0.05em",
+          }}>
+            <span style={{ fontSize: 16, lineHeight: 1 }}>⏏</span>
+            <span>Kilép</span>
+          </button>
         </nav>
       )}
     </div>
@@ -358,9 +520,11 @@ export default function App() {
 }
 
 // ─── KÉSZLET ───────────────────────────────────────────────────────────────────
-function KeszletView({ data, isMobile }) {
+function KeszletView({ data, isMobile, auth }) {
   const { products, locations, opening, movements } = data;
-  const [selLoc, setSelLoc] = useState(locations[0]?.id || "");
+  const defaultLoc = auth?.locId || locations[0]?.id || "";
+  const [selLoc, setSelLoc] = useState(defaultLoc);
+  const visibleLocs = auth?.role === "admin" ? locations : locations.filter(l => l.id === auth?.locId);
   const loc = locations.find(l => l.id === selLoc);
   const locColor = loc?.type === "r" ? T.amber : T.blue;
 
@@ -371,17 +535,15 @@ function KeszletView({ data, isMobile }) {
       {/* Location grid */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 20 }}>
         {[
-          { label: "─ RAKTÁRAK ─", type: "r", color: T.amber },
-          { label: "─ PULTOK ─", type: "b", color: T.blue },
-        ].map(grp => (
-          <div key={grp.type} style={{ display: "contents" }}>
-            {locations.filter(l => l.type === grp.type).map(l => (
-              <button key={l.id} onClick={() => setSelLoc(l.id)} style={pill(selLoc === l.id, grp.color)}>
-                {l.name}
-              </button>
-            ))}
-          </div>
-        ))}
+          { type: "r", color: T.amber },
+          { type: "b", color: T.blue },
+        ].map(grp =>
+          visibleLocs.filter(l => l.type === grp.type).map(l => (
+            <button key={l.id} onClick={() => setSelLoc(l.id)} style={pill(selLoc === l.id, grp.color)}>
+              {l.name}
+            </button>
+          ))
+        )}
       </div>
 
       {loc && (
@@ -418,9 +580,10 @@ function KeszletView({ data, isMobile }) {
 }
 
 // ─── MOZGÁS ────────────────────────────────────────────────────────────────────
-function MozgasView({ data, addMovement, deleteMovement, isMobile }) {
+function MozgasView({ data, addMovement, deleteMovement, isMobile, auth }) {
   const { products, locations, opening, movements } = data;
-  const [form, setForm] = useState({ from: "", to: "", prod: "", qty: "", note: "" });
+  const isWH = auth?.role === "warehouse";
+  const [form, setForm] = useState({ from: auth?.locId || "", to: "", prod: "", qty: "", note: "" });
   const [flash, setFlash] = useState(null);
   const [showAll, setShowAll] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -473,7 +636,7 @@ function MozgasView({ data, addMovement, deleteMovement, isMobile }) {
             >
               <option value="">Válassz helyszínt...</option>
               <optgroup label="─ RAKTÁRAK ─">
-                {locations.filter(l => l.type === "r" && l.id !== (key === "to" ? form.from : null)).map(l => (
+                {locations.filter(l => l.type === "r" && l.id !== (key === "to" ? form.from : null) && (!isWH || key !== "from" || l.id === auth.locId)).map(l => (
                   <option key={l.id} value={l.id}>{l.name}</option>
                 ))}
               </optgroup>
@@ -622,10 +785,12 @@ function MozgasView({ data, addMovement, deleteMovement, isMobile }) {
 }
 
 // ─── LELTÁR ────────────────────────────────────────────────────────────────────
-function LeltarView({ data, updateData, isMobile }) {
+function LeltarView({ data, updateData, isMobile, auth }) {
   const { products, locations, opening, closing } = data;
   const [mode, setMode] = useState("opening");
-  const [selLoc, setSelLoc] = useState(locations[0]?.id || "");
+  const defaultLoc = auth?.locId || locations[0]?.id || "";
+  const [selLoc, setSelLoc] = useState(defaultLoc);
+  const visibleLocs = auth?.role === "admin" ? locations : locations.filter(l => l.id === auth?.locId);
   const stockMap = mode === "opening" ? opening : closing;
   const loc = locations.find(l => l.id === selLoc);
   const locColor = loc?.type === "r" ? T.amber : T.blue;
@@ -653,8 +818,8 @@ function LeltarView({ data, updateData, isMobile }) {
       </div>
 
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 20 }}>
-        {[{ label: "─ R ─", type: "r", color: T.amber }, { label: "─ P ─", type: "b", color: T.blue }].map(grp =>
-          locations.filter(l => l.type === grp.type).map(l => (
+        {[{ type: "r", color: T.amber }, { type: "b", color: T.blue }].map(grp =>
+          visibleLocs.filter(l => l.type === grp.type).map(l => (
             <button key={l.id} onClick={() => setSelLoc(l.id)} style={pill(selLoc === l.id, grp.color)}>
               {l.name}
             </button>
@@ -842,6 +1007,150 @@ function ElszamolasView({ data, isMobile }) {
             Csak a zárókészlettel rögzített pultok szerepelnek az összesítőben
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+
+// ─── BEVÉTELEZÉS (PULTOS) ──────────────────────────────────────────────────────
+function BevetelesView({ data, addMovement, isMobile, auth }) {
+  const { products, locations, opening, movements } = data;
+  const myLoc = locations.find(l => l.id === auth?.locId);
+  const warehouses = locations.filter(l => l.type === "r");
+  const [form, setForm] = useState({ from: "", prod: "", qty: "", note: "" });
+  const [flash, setFlash] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const prodUnit = id => products.find(p => p.id === id)?.unit || "";
+  const warehouseStock = form.from && form.prod
+    ? calcStock(form.from, form.prod, opening, movements) : null;
+
+  // My incoming movements (received at this bar)
+  const myIncoming = movements
+    .filter(m => m.to === auth?.locId)
+    .slice(0, 10);
+
+  const submit = async () => {
+    if (!form.from || !form.prod || !form.qty) {
+      setFlash({ type: "err", msg: "Tölts ki minden mezőt!" });
+      return setTimeout(() => setFlash(null), 2500);
+    }
+    const qty = parseFloat(form.qty);
+    if (isNaN(qty) || qty <= 0) {
+      setFlash({ type: "err", msg: "Érvénytelen mennyiség!" });
+      return setTimeout(() => setFlash(null), 2500);
+    }
+    setSaving(true);
+    await addMovement({
+      id: Date.now().toString(),
+      ts: new Date().toISOString(),
+      from: form.from,
+      to: auth.locId,
+      prod: form.prod,
+      qty,
+      note: form.note || "bevételezés",
+    });
+    setSaving(false);
+    setForm(f => ({ ...f, prod: "", qty: "", note: "" }));
+    setFlash({ type: "ok", msg: "Bevételezve!" });
+    setTimeout(() => setFlash(null), 2000);
+  };
+
+  return (
+    <div style={{ padding: isMobile ? 16 : 28 }}>
+      <div style={css.sectionTitle}>BEVÉTELEZÉS</div>
+      {myLoc && (
+        <div style={{ marginBottom: 18, display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ background: T.blue + "20", border: `1px solid ${T.blue}33`, borderRadius: 5, padding: "3px 9px", fontSize: 9, color: T.blue, letterSpacing: "0.15em" }}>
+            PULT
+          </div>
+          <span style={{ fontSize: 15, fontWeight: 700 }}>{myLoc.name}</span>
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div>
+          <label style={css.label}>HONNAN ÉRKEZIK</label>
+          <select value={form.from} onChange={e => setForm(f => ({ ...f, from: e.target.value }))}
+            style={{ ...css.input, color: form.from ? T.text : "#444" }}>
+            <option value="">Válassz raktárt...</option>
+            {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+        </div>
+
+        <div>
+          <label style={css.label}>TERMÉK</label>
+          <select value={form.prod} onChange={e => setForm(f => ({ ...f, prod: e.target.value }))}
+            style={{ ...css.input, color: form.prod ? T.text : "#444" }}>
+            <option value="">Válassz terméket...</option>
+            {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </div>
+
+        {warehouseStock !== null && (
+          <div style={{ background: "#141414", border: `1px solid ${warehouseStock <= 0 ? T.red + "44" : T.border}`, borderRadius: 8, padding: "8px 13px", fontSize: 12, display: "flex", justifyContent: "space-between" }}>
+            <span style={{ color: T.muted }}>Raktárban elérhető</span>
+            <span style={{ fontWeight: 700, color: warehouseStock <= 0 ? T.red : T.amber }}>
+              {warehouseStock} {prodUnit(form.prod)}
+            </span>
+          </div>
+        )}
+
+        <div>
+          <label style={css.label}>MENNYISÉG{form.prod ? ` (${prodUnit(form.prod)})` : ""}</label>
+          <input type="number" value={form.qty} min="0"
+            onChange={e => setForm(f => ({ ...f, qty: e.target.value }))}
+            placeholder="0"
+            style={{ ...css.input, fontSize: 28, textAlign: "center", fontWeight: 700, padding: "12px" }} />
+        </div>
+
+        <div>
+          <label style={css.label}>MEGJEGYZÉS (opcionális)</label>
+          <input type="text" value={form.note}
+            onChange={e => setForm(f => ({ ...f, note: e.target.value }))}
+            placeholder="pl. éjjeli utánpótlás"
+            style={css.input} />
+        </div>
+
+        {flash && (
+          <div style={{ background: flash.type === "ok" ? "#16a34a22" : "#ef444422", border: `1px solid ${flash.type === "ok" ? "#16a34a44" : "#ef444444"}`, borderRadius: 8, padding: "10px 14px", fontSize: 12, color: flash.type === "ok" ? T.green : "#f87171", textAlign: "center" }}>
+            {flash.type === "ok" ? "✓ " : "✕ "}{flash.msg}
+          </div>
+        )}
+
+        <button onClick={submit} disabled={saving} style={{
+          background: saving ? "#333" : T.blue, color: saving ? T.muted : "#000",
+          border: "none", borderRadius: 10, padding: "15px", fontSize: 13, fontWeight: 700,
+          cursor: saving ? "not-allowed" : "pointer", fontFamily: T.font, letterSpacing: "0.1em",
+        }}>
+          {saving ? "MENTÉS..." : "↓ BEVÉTELEZÉS RÖGZÍTÉSE"}
+        </button>
+      </div>
+
+      {/* Incoming log */}
+      {myIncoming.length > 0 && (
+        <div style={{ marginTop: 28 }}>
+          <div style={{ ...css.sectionTitle, marginBottom: 12 }}>UTOLSÓ BEVÉTELEZÉSEK</div>
+          {myIncoming.map(m => {
+            const prod = products.find(p => p.id === m.prod);
+            const from = locations.find(l => l.id === m.from);
+            return (
+              <div key={m.id} style={css.card}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <span style={{ fontSize: 12, color: T.amber }}>{from?.name}</span>
+                  <span style={{ fontSize: 16, fontWeight: 700 }}>{m.qty} <span style={{ fontSize: 10, color: T.dim }}>{prod?.unit}</span></span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 11, color: T.muted }}>{prod?.name}</span>
+                  <span style={{ fontSize: 10, color: "#2a2a2a" }}>
+                    {new Date(m.ts).toLocaleTimeString("hu-HU", { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );
@@ -1090,13 +1399,49 @@ function ImportPanel({ onImport, onClose }) {
 }
 
 // ─── BEÁLLÍTÁSOK ───────────────────────────────────────────────────────────────
-function BeallitasView({ data, updateData, resetData, isMobile }) {
+
+// ─── PIN ROW ───────────────────────────────────────────────────────────────────
+function PinRow({ label, currentPin, value, onChange, onSave }) {
+  const [show, setShow] = useState(false);
+  const masked = currentPin.replace(/./g, "●");
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+      <span style={{ flex: 1, fontSize: 13, color: "#aaa" }}>{label}</span>
+      <span style={{ fontSize: 12, color: T.dim, letterSpacing: "0.2em", minWidth: 44 }}>
+        {show ? currentPin : masked}
+      </span>
+      <button onClick={() => setShow(s => !s)} style={{ background: "none", border: "none", color: T.dim, fontSize: 13, cursor: "pointer", padding: "0 4px" }}>
+        {show ? "🙈" : "👁"}
+      </button>
+      <input
+        type="text"
+        maxLength={4}
+        value={value}
+        onChange={e => onChange(e.target.value.replace(/\D/g, "").slice(0, 4))}
+        placeholder="új PIN"
+        style={{ ...css.input, width: 80, textAlign: "center", padding: "8px 6px", fontSize: 14, letterSpacing: "0.2em" }}
+      />
+      <button onClick={onSave} disabled={!value || value.length !== 4} style={{
+        background: value?.length === 4 ? T.amber : "#1a1a1a",
+        color: value?.length === 4 ? "#000" : T.dim,
+        border: "none", borderRadius: 8, padding: "8px 12px",
+        fontSize: 11, fontWeight: 700, cursor: value?.length === 4 ? "pointer" : "not-allowed",
+        fontFamily: css.input.fontFamily, letterSpacing: "0.06em", flexShrink: 0,
+      }}>MENT</button>
+    </div>
+  );
+}
+
+function BeallitasView({ data, updateData, resetData, isMobile, auth, onLogout }) {
   const [sub, setSub] = useState("loc");
   const [newName, setNewName] = useState("");
   const [newUnit, setNewUnit] = useState("db");
   const [confirmReset, setConfirmReset] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [importFlash, setImportFlash] = useState("");
+  const [pinEdit, setPinEdit] = useState({});        // locId/admin -> new pin value
+  const [pinFlash, setPinFlash] = useState("");
+  const isAdmin = auth?.role === "admin";
 
   const addProduct = () => {
     if (!newName.trim()) return;
@@ -1127,8 +1472,13 @@ function BeallitasView({ data, updateData, resetData, isMobile }) {
     <div style={{ padding: isMobile ? 16 : 28 }}>
       <div style={css.sectionTitle}>BEÁLLÍTÁSOK</div>
 
-      <div style={{ display: "flex", gap: 6, marginBottom: 24 }}>
-        {[{ id: "loc", label: "HELYSZÍNEK" }, { id: "prod", label: "TERMÉKEK" }, { id: "adatok", label: "ADATOK" }].map(t => (
+      <div style={{ display: "flex", gap: 6, marginBottom: 24, flexWrap: "wrap" }}>
+        {[
+          { id: "loc",  label: "HELYSZÍNEK" },
+          { id: "prod", label: "TERMÉKEK" },
+          ...(isAdmin ? [{ id: "pin", label: "PIN KÓDOK" }] : []),
+          { id: "adatok", label: "ADATOK" },
+        ].map(t => (
           <button key={t.id} onClick={() => setSub(t.id)} style={{ ...btn(sub === t.id), flex: 1, padding: "10px 6px" }}>{t.label}</button>
         ))}
       </div>
@@ -1207,6 +1557,83 @@ function BeallitasView({ data, updateData, resetData, isMobile }) {
               </div>
             </>
           )}
+        </>
+      )}
+
+      {sub === "pin" && isAdmin && (
+        <>
+          {pinFlash && (
+            <div style={{ background: "#16a34a22", border: "1px solid #16a34a44", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: T.green, marginBottom: 12 }}>
+              {pinFlash}
+            </div>
+          )}
+          <div style={{ fontSize: 9, color: T.dim, letterSpacing: "0.12em", marginBottom: 14 }}>
+            PIN kódok módosítása – csak admin látja ezt az oldalt
+          </div>
+
+          {/* Admin PIN */}
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ fontSize: 9, color: T.amber, letterSpacing: "0.15em", marginBottom: 8 }}>ADMIN</div>
+            <PinRow
+              label="Admin"
+              currentPin={data.pins?.admin || INIT_PINS.admin}
+              value={pinEdit["admin"] ?? ""}
+              onChange={v => setPinEdit(e => ({ ...e, admin: v }))}
+              onSave={() => {
+                const val = pinEdit["admin"];
+                if (!val || val.length !== 4 || !/^\d{4}$/.test(val)) {
+                  setPinFlash("❌ 4 számjegyű PIN szükséges!"); setTimeout(() => setPinFlash(""), 2500); return;
+                }
+                updateData(d => { d.pins = { ...(d.pins || INIT_PINS), admin: val }; return d; });
+                setPinEdit(e => { const n = {...e}; delete n["admin"]; return n; });
+                setPinFlash("✓ Admin PIN módosítva"); setTimeout(() => setPinFlash(""), 2500);
+              }}
+            />
+          </div>
+
+          {/* Warehouse PINs */}
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ fontSize: 9, color: T.amber, letterSpacing: "0.15em", marginBottom: 8 }}>RAKTÁRAK</div>
+            {data.locations.filter(l => l.type === "r").map(loc => (
+              <PinRow key={loc.id}
+                label={loc.name}
+                currentPin={data.pins?.[loc.id] || INIT_PINS[loc.id] || "????"}
+                value={pinEdit[loc.id] ?? ""}
+                onChange={v => setPinEdit(e => ({ ...e, [loc.id]: v }))}
+                onSave={() => {
+                  const val = pinEdit[loc.id];
+                  if (!val || val.length !== 4 || !/^\d{4}$/.test(val)) {
+                    setPinFlash("❌ 4 számjegyű PIN szükséges!"); setTimeout(() => setPinFlash(""), 2500); return;
+                  }
+                  updateData(d => { d.pins = { ...(d.pins || INIT_PINS), [loc.id]: val }; return d; });
+                  setPinEdit(e => { const n = {...e}; delete n[loc.id]; return n; });
+                  setPinFlash(`✓ ${loc.name} PIN módosítva`); setTimeout(() => setPinFlash(""), 2500);
+                }}
+              />
+            ))}
+          </div>
+
+          {/* Bar PINs */}
+          <div>
+            <div style={{ fontSize: 9, color: T.blue, letterSpacing: "0.15em", marginBottom: 8 }}>PULTOK</div>
+            {data.locations.filter(l => l.type === "b").map(loc => (
+              <PinRow key={loc.id}
+                label={loc.name}
+                currentPin={data.pins?.[loc.id] || INIT_PINS[loc.id] || "????"}
+                value={pinEdit[loc.id] ?? ""}
+                onChange={v => setPinEdit(e => ({ ...e, [loc.id]: v }))}
+                onSave={() => {
+                  const val = pinEdit[loc.id];
+                  if (!val || val.length !== 4 || !/^\d{4}$/.test(val)) {
+                    setPinFlash("❌ 4 számjegyű PIN szükséges!"); setTimeout(() => setPinFlash(""), 2500); return;
+                  }
+                  updateData(d => { d.pins = { ...(d.pins || INIT_PINS), [loc.id]: val }; return d; });
+                  setPinEdit(e => { const n = {...e}; delete n[loc.id]; return n; });
+                  setPinFlash(`✓ ${loc.name} PIN módosítva`); setTimeout(() => setPinFlash(""), 2500);
+                }}
+              />
+            ))}
+          </div>
         </>
       )}
 
